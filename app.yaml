@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-ns
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: web-pvc
+  namespace: app-ns
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: default
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-app-code
+  namespace: app-ns
+data:
+  app.py: |
+    from flask import Flask
+    import os
+
+    app = Flask(__name__)
+    STORAGE_PATH = "/data/visits.txt"
+
+    @app.route('/')
+    def hello():
+        os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
+        count = 0
+        if os.path.exists(STORAGE_PATH):
+            with open(STORAGE_PATH, "r") as f:
+                content = f.read()
+                count = int(content) if content else 0
+        
+        count += 1
+        with open(STORAGE_PATH, "w") as f:
+            f.write(str(count))
+
+        return f"""
+        <html>
+            <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+                <h1 style="color: #0078d4;">Custom App via ConfigMap</h1>
+                <p>Successfully running your <b>app.py</b> script!</p>
+                <div style="font-size: 24px; background: #f3f2f1; padding: 20px; display: inline-block;">
+                    Total Visits: <b>{count}</b>
+                </div>
+            </body>
+        </html>
+        """
+
+    if __name__ == "__main__":
+        app.run(host='0.0.0.0', port=8080)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+  namespace: app-ns
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      containers:
+      - name: web-container
+        image: python:3.9-slim
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            pip install flask
+            python3 /app/app.py
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: code-volume
+          mountPath: /app/app.py
+          subPath: app.py
+        - name: storage-volume
+          mountPath: /data
+      volumes:
+      - name: code-volume
+        configMap:
+          name: web-app-code
+      - name: storage-volume
+        persistentVolumeClaim:
+          claimName: web-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: app-ns
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: web-app
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  namespace: app-ns
+spec:
+  ingressClassName: nginx 
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 80
